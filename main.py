@@ -1,151 +1,30 @@
 import csv
-import math
-import datetime
-import re
-from config import START_DATE, START_TIME, END_TIME, YEAR
+from pathlib import Path
+import shutil
+import itertools
 
-
-JUDGE_AVAILABILITY_DAYS = (
-    "Monday, January 18",
-    "Tuesday, January 19",
-    "Wednesday, January 20",
-    "Thursday, January 21",
-    "Friday, January 22",
+from judge import Judge
+from student import Student
+from util import (
+    PresentationAssignmentError,
+    time_slot_to_time,
+    column_name_to_date,
+    date_and_time_to_index,
+    index_to_datetime,
+    value_to_excel_csv_string,
 )
-JUDGE_AVAILABILITY_COLUMN_NAMES = tuple(
-    f"Availability for Poster and/or Oral Evaluation for Monday, January 18-Friday, January 22, 8:00am - 8:00pm. (Please select  a minimum of 2, but more is appriciated.) [{day}]"
-    for day in JUDGE_AVAILABILITY_DAYS
+from config import (
+    JudgeColumnNames,
+    StudentColumnNames,
+    JUDGE_CATEGORIES,
+    STUDENT_CATEGORIES,
+    CATEGORY_NUMBERS_TO_LABELS,
+    INPUT_FOLDER_PATH,
+    OUTPUT_FOLDER_PATH,
+    STUDENT_DATA,
+    JUDGE_DATA,
+    ERROR_FILE,
 )
-JUDGE_CATEGORIES = {
-    "Medicine and Health; Behavioral and Social Sciences": 0,
-    "Life sciences (general biology—animal sciences, plant sci, ecology; cellular and molecular bio, genetics, immunology, bio)": 1,
-    "Engineering; technology (including renewable energies, robotics)": 2,
-    "Environmental science (pollution and impact upon ecosystems, environmental management, bioremediation, climatology, weather)": 3,
-    "Chemistry (including chemistry-physical, organic, inorganic; earth science-geochemistry; materials science, alternative fuels)": 4,
-    "Mathematics and Computer science/computer engineering; applied mathematics-theoretical computer science": 5,
-    "Physical Sciences – physics; computational astronomy; theoretical mathematics": 6,
-    "Biomedical Sciences, Molecular/Cellular": 7,
-}
-STUDENT_CATEGORIES = {
-    "Medicine & Health/Behavioral Sci": 0,
-    "Life Sciences": 1,
-    "Engineering & Technology": 2,
-    "Environmental Sciences": 3,
-    "Chemistry": 4,
-    "Mathematics & Computer Science": 5,
-    "Physical Sciences": 6,
-    "Biomedical Sciences": 7,
-}
-
-
-class Judge:
-    PAPER_LIMIT = 7
-
-    def __init__(
-        self,
-        judge_id,
-        first,
-        last,
-        email,
-        phone,
-        preferred_categories,
-        is_paper_reviewer,
-        presentation_availability,
-    ):
-        self.judge_id = judge_id  # int
-        self.first = first  # str
-        self.last = last  # str
-        self.email = email  # str
-        self.phone = phone  # str
-        self.preferred_categories = preferred_categories  # list of int
-        self.is_paper_reviewer = is_paper_reviewer  # bool
-        self.presentation_availability = (
-            presentation_availability  # dict of (str: list of str)
-        )
-
-        # 30 min slots, 2 slots per hour (multiply total slots by factor of 2)
-        self.presentation_slots = (
-            sum(len(day) for day in presentation_availability.values()) * 2
-        )  # int
-
-        self.assigned_presentations = []  # list of Student
-        self.assigned_papers = []  # list of Student
-
-    def __eq__(self, other):
-        return self.judge_id == other.judge_id
-
-    def assign_presentation(self, student):
-        if not self.presentation_slots:
-            raise Exception("No slots available")
-        if len(student.presentation_judges) >= 2:
-            raise Exception("Too many presentation judges")
-        if (
-            len(student.presentation_judges) == 1
-            and student.presentation_judges[0] == self
-        ):
-            raise Exception("Trying to add same judge twice")
-        self.presentation_slots -= 1
-        self.assigned_presentations.append(student)
-        student.presentation_judges.append(self)
-
-    def assign_paper(self, student):
-        if len(self.assigned_papers) >= self.PAPER_LIMIT:
-            raise Exception("Paper limit reached")
-        if len(student.paper_judges) >= 2:
-            raise Exception("Too many paper judges")
-        if len(student.paper_judges) == 1 and student.paper_judges[0] == self:
-            raise Exception("Trying to add same judge twice")
-        self.assigned_papers.append(student)
-        student.paper_judges.append(self)
-
-    def __str__(self):
-        return "\n".join(
-            [f"{field}: {value}" for field, value in self.__dict__.items()]
-        )
-
-
-class Student:
-    def __init__(self, student_id, is_paper, is_poster, category):
-        self.student_id = student_id  # int
-        self.is_paper = is_paper  # bool
-        self.is_poster = is_poster  # bool
-        self.category = category  # int
-
-        self.paper_judges = []  # list of Judge
-        self.presentation_judges = []  # list of Judge
-
-    def __eq__(self, other):
-        return self.student_id == other.student_id
-
-    def __str__(self):
-        return "\n".join(
-            [f"{field}: {value}" for field, value in self.__dict__.items()]
-        )
-
-
-def time_slot_to_time(time_slot_name):
-    # 11:00 am - 12:00 pm
-    pattern = r"(\d{1,2}):\d{2}\s*([ap])m"  # Minutes are not captured, but minutes are not assumed to be "00"
-    hour, am_pm = re.search(pattern, column_name).group(1, 2)
-    if am_pm == "p":
-        hour += 12
-    else:
-        # TODO: remove assert
-        assert am_pm == "a"
-    return hour
-
-
-def column_name_to_date(column_name):
-    pattern = r"\[.*(\w+)\s+([0-3][0-9])\]"
-    month, date_ = re.search(pattern, column_name).group(1, 2)
-    return datetime.date(year=YEAR, month=month, day=date_)
-
-
-def date_and_time_to_index(date_, time_):
-    # Assumes that date_ is passed in as a datetime object, time_ is passed in as the hour number (an int)
-    start_date = datetime.date.fromisoformat(START_DATE)
-    day_num = (date_ - start_date).days
-    return (time_ - START_TIME) + day_num * (END_TIME - START_TIME)
 
 
 def create_judge_roster(csv_filename):
@@ -155,49 +34,40 @@ def create_judge_roster(csv_filename):
 
         # Create an entry in the roster for each judge with their contact details, preferred categories, and availability
         for row in csvreader:
-            new_presentation_availability = set()
+            if not any(row.values()):
+                continue
+
+            new_presentation_availability = list()
             for column_name, times_selected in row.items():
-                if column_name not in JUDGE_AVAILABILITY_COLUMN_NAMES:
+                if column_name not in JudgeColumnNames.JUDGE_AVAILABILITY_COLUMN_NAMES:
                     continue
                 column_date = column_name_to_date(column_name)
                 if times_selected:
                     for time_slot in times_selected.split(","):
+                        if not time_slot:
+                            continue
                         index_at_00_min = date_and_time_to_index(
                             column_date,
                             time_slot_to_time(time_slot),
                         )
-                        new_presentation_availability.add(index_at_00_min)
-                        new_presentation_availability.add(index_at_00_min + 0.5)
+                        new_presentation_availability.append(index_at_00_min)
+                        new_presentation_availability.append(index_at_00_min + 0.5)
+
             new_judge = Judge(
                 judge_id=csvreader.line_num,  # using the line number as a sequential ID field for each judge
-                first=row["First Name"],
-                last=row["Last Name"],
-                email=row["Email Address"],
-                phone=row["Cell Phone Number"],
+                first=row[JudgeColumnNames.FIRST_NAME],
+                last=row[JudgeColumnNames.LAST_NAME],
+                email=row[JudgeColumnNames.EMAIL],
+                phone=row[JudgeColumnNames.PHONE],
                 preferred_categories=[
                     JUDGE_CATEGORIES[category]
                     for category in JUDGE_CATEGORIES
-                    if row[
-                        "What categories would you would prefer to review and/or judge?"
-                    ].find(category)
-                    != -1
+                    if row[JudgeColumnNames.PREFERRED_CATEGORIES].find(category) != -1
                 ],
-                is_paper_reviewer=row[
-                    "Would you like to volunteer as a paper reviewer?"
-                ]
-                == "Yes",
-                # presentation_availability={
-                #     # TODO: Hardcoded day name extraction, should be revised later on
-                #     column_name.partition("[")[2].rpartition("]")[0]: [time.strip() for time in times_selected.split(",")]
-                #     for column_name, times_selected in row.items()
-                #     if column_name in JUDGE_AVAILABILITY_COLUMN_NAMES and times_selected
-                # }
+                is_paper_reviewer=row[JudgeColumnNames.IS_PAPER_REVIEWER] == "Yes",
                 presentation_availability=new_presentation_availability,
             )
             judge_roster.append(new_judge)
-
-            # YYYY-MM-DDTHH:MM : 0
-            # 2021-01-18T08:00 : 0
 
     return judge_roster
 
@@ -210,132 +80,372 @@ def create_student_roster(csv_filename):
         # Create an entry in the roster for each student
         for row in csvreader:
             new_student = Student(
-                student_id=row["Student Number"],
-                is_paper="Oral" in row["Participation Type"],
-                is_poster="Poster" in row["Participation Type"],
-                category=STUDENT_CATEGORIES[
-                    row[
-                        "Research Category of Competition. Please note: your chosen category is not guaranteed."
-                    ]
-                ],
+                student_id=int(row[StudentColumnNames.SUBMISSION_NUMBER]),
+                is_paper="Oral" in row[StudentColumnNames.PARTICIPATION_TYPE],
+                is_poster="Poster" in row[StudentColumnNames.PARTICIPATION_TYPE],
+                category=STUDENT_CATEGORIES[row[StudentColumnNames.CATEGORY]],
+                poster_pdf=row[StudentColumnNames.POSTER_PDF_UPLOAD],
+                full_paper_pdf=row[StudentColumnNames.PAPER_PDF_UPLOAD],
             )
             student_roster.append(new_student)
 
     return student_roster
 
 
-def get_cat_time_judges(judge_roster):
-    # Data structure explanation/template
-    # cat_time_judges = {
-    #     0: {
-    #         "Monday 8 am": [judge1, judge2, judge3,],
-    #         "Monday 9 am": [judge2, judge3,],
-    #         ...,
-    #         "Friday 8 pm": [judge1, judge7, judge9,],
-    #     },
-    #     1: {
-    #         "Monday 8 am": [judge4, judge7,],
-    #         "Monday 9 am": [judge4, judge7, judge8,],
-    #         ...
-    #     },
-    #     ...
-    # }
-    cat_time_judges = dict()
-    for judge in judge_roster:
-        for cat in judge.preferred_categories:
-            for time_slot in judge.presentation_availability:
-                if cat not in cat_time_judges:
-                    cat_time_judges[cat] = dict()
-                    cat_time_judges[cat][time_slot] = [judge]
-                    continue
-                if time_slot in cat_time_judges[cat]:
-                    cat_time_judges[cat][time_slot].append(judge)
-                else:
-                    cat_time_judges[cat][time_slot] = [judge]
-
-
 def assign_presentations(judge_roster, student_roster):
-    pass
+    # Aggregate all students by category who will be poster presenters
+    students_by_cat = {
+        cat: [
+            student
+            for student in student_roster
+            if student.is_poster and student.category == cat
+        ]
+        for cat in STUDENT_CATEGORIES.values()
+    }
+
+    category_judges = {category: [] for category in JUDGE_CATEGORIES.values()}
+    for judge in judge_roster:
+        # Filter out judges who only review papers
+        if not judge.presentation_slots:
+            continue
+        for category in judge.preferred_categories:
+            category_judges[category].append(judge)
+
+    for cat in sorted(
+        category_judges, key=lambda category: len(category_judges[category])
+    ):
+        students = students_by_cat[cat][:]
+
+        assigned_yet = 0
+        while students and assigned_yet <= len(students_by_cat[cat]):
+            judges = [
+                judge
+                for judge in category_judges[cat]
+                if len(judge.assigned_presentations) <= assigned_yet
+                and judge.presentation_slots >= 1
+            ]
+            for judge in judges:
+                if not students:
+                    break
+                student = students.pop()
+                judge.assign_presentation(student)
+                if judge.is_paper_reviewer and student.is_paper:
+                    judge.assign_paper(student)
+
+            assigned_yet += 1
+
+        if students:
+            error_message = (
+                f"The category {CATEGORY_NUMBERS_TO_LABELS[cat]} did not have enough judges to evaluate all presentations.\n"
+                "Either assign more judges to this category or transfer some students out of this category.\n"
+                f"There are {len(students_by_cat[cat])} student(s) in this category who are presenting posters and {len(category_judges[category])} "
+                "judge(s) who have submitted availability to evaluate poster presentations.\n"
+            )
+            raise PresentationAssignmentError(error_message)
 
 
 def assign_papers(judge_roster, student_roster):
-    # Aggregate all students who still need papers reviewed
-    students = []
-    for student in student_roster:
-        if student.is_paper and len(student.paper_judges) == 0:
-            # Add student twice because they need two judges
-            students.append(student)
-            students.append(student)
-        if student.is_paper and len(student.paper_judges) == 1:
-            # Add student once because they need one judge
-            students.append(student)
-    # Randomly shuffle students so that the chances of getting assigned the same judge are minimized
-    random.shuffle(students)
+    # Aggregate all students by category who will be poster presenters
+    students_by_cat = {
+        cat: [
+            student
+            for student in student_roster
+            if student.is_paper
+            and len(student.paper_judges) < 2
+            and student.category == cat
+        ]
+        for cat in STUDENT_CATEGORIES.values()
+    }
 
-    # Aggregate all judges who are papers reviewers
-    judges = [judge for judge in judge_roster if judge.is_paper_reviewer]
+    category_judges = {category: [] for category in JUDGE_CATEGORIES.values()}
+    for judge in judge_roster:
+        # Filter out judges who only do posters
+        if not judge.is_paper_reviewer:
+            continue
+        for category in judge.preferred_categories:
+            category_judges[category].append(judge)
 
-    # Sort first by ascending number of papers, second by ascending number of presentations
-    judges.sort(
-        key=lambda judge: (
-            len(judge.assigned_papers),
-            len(judge.assigned_presentations),
+    for cat in sorted(
+        category_judges, key=lambda category: len(category_judges[category])
+    ):
+        students = students_by_cat[cat][:]
+        conflict_students = []
+
+        assigned_yet = 0
+        while students:
+            judges = [
+                judge
+                for judge in category_judges[cat]
+                if len(judge.assigned_papers) <= assigned_yet
+            ]
+
+            for judge in judges:
+                if not students:
+                    break
+                student = students.pop()
+                if len(student.paper_judges) == 1 and student.paper_judges[0] == judge:
+                    conflict_students.append(student)
+                    break
+                judge.assign_paper(student)
+                if len(student.paper_judges) < 2:
+                    students.append(student)
+
+            assigned_yet += 1
+
+        # Handle conflicts
+        judges = category_judges[cat][:]
+        for student in conflict_students:
+            judges.sort(
+                key=lambda judge: (
+                    len(judge.assigned_papers),
+                    len(judge.assigned_presentations),
+                )
+            )
+            judge_iter = itertools.cycle(judges)
+            while len(student.paper_judges) < 2:
+                judge = next(judge_iter)
+                if len(student.paper_judges) == 1 and student.paper_judges[0] == judge:
+                    continue
+                judge.assign_paper(student)
+
+
+def output(judge_roster, student_roster, error=None):
+    output_folder_path = Path(OUTPUT_FOLDER_PATH)
+    if output_folder_path.exists():
+        shutil.rmtree(output_folder_path)
+    output_folder_path.mkdir()
+
+    if error:
+        error_path = output_folder_path / ERROR_FILE
+        print(
+            f"[Error]\n{error}\nCheck {str(error_path.resolve())} to review this error message."
         )
-    )
+        with open(error_path, "w") as error_file:
+            error_file.write(error)
+        return
 
-    # Number of assigned papers per judge (sorted in ascending order)
-    judge_paper_vals = [len(judge.assigned_papers) for judge in judges]
-
-    # Find threshold (max number of papers that one judge can be assigned)
-    total_papers = sum(judge_paper_vals) + len(students)
-    threshold = math.ceil(total_papers / len(judges))
-    # Maybe modify threshold calculations so that judges who do both poster + paper get less papers?
-
-    # TODO: Assign judges
-
-
-def index_to_datetime(index):
-    hour = index % (END_TIME - START_TIME) + START_TIME
-    date_ = index // (END_TIME - START_TIME) + datetime.date.fromisoformat(START_DATE)
-    return datetime.datetime(year=YEAR, month=date_.month, day=date_.day, hour=hour)
-
-
-def output(judge_roster, student_roster):
     out = []
     for judge in judge_roster:
         out.append(
             f"{judge.first} {judge.last}:"
-            f" {len(judge.assigned_presentations)}, {len(judge.assigned_papers)}"
+            f" Posters: {len(judge.assigned_presentations)}, Papers: {len(judge.assigned_papers)}"
         )
 
     for student in student_roster:
-        if student.paper_and_oral:
-            out.append(
-                f"{student.student_id}: "
-                f"{'Paper' if student.paper_and_oral else ''}"
-                " | "
-                f"{'Poster' if student.poster else ''}"
-                " | "
-                f"{student.presentation_judge.first if student.presentation_judge else ''}"
-                f"{student.presentation_judge.last if student.presentation_judge else ''}"
-                " | "
-                f"{student.presentation_judge2.first if student.presentation_judge2 else ''}"
-                f"{student.presentation_judge2.last if student.presentation_judge2 else ''}"
-                " | "
-                f"{student.paper_judge.first if student.paper_judge else ''}"
-                f"{student.paper_judge.last if student.paper_judge else ''}"
+        out.append(
+            f"{student.student_id}: "
+            f"{'Paper' if student.is_paper else ''}: {student.paper_judges[0] if len(student.paper_judges) else ''}, {student.paper_judges[1] if len(student.paper_judges) == 2 else ''}"
+            " | "
+            f"{'Poster' if student.is_poster else ''}: {student.presentation_judges[0] if len(student.presentation_judges) else ''}"
+        )
+
+    student_headers = [
+        "Submission Number",
+        "Oral/Paper",
+        "Poster",
+        "Category",
+        "Paper Judge 1",
+        "Paper Judge 2",
+        "Poster Judge 1",
+        "Poster Date",
+        "Poster Time",
+    ]
+    paper_judges_headers = [
+        "First Name",
+        "Last Name",
+        "Email",
+        "Phone",
+        "Assigned Student Number",
+        "Paper PDF",
+    ]
+    poster_judges_headers = [
+        "First Name",
+        "Last Name",
+        "Email",
+        "Phone",
+        "Assigned Student Number",
+        "Date",
+        "Time",
+        "Poster PDF",
+    ]
+    judges_headers = [
+        "First Name",
+        "Last Name",
+        "Email",
+        "Phone",
+        "Poster Assignments",
+        "Paper Assignments",
+    ]
+    presentation_schedule_headers = [
+        "Date",
+        "Time",
+        "Student Number",
+        "Judge 1 First Name",
+        "Judge 1 Last Name",
+        "Judge 1 Email",
+        "Judge 1 Phone",
+    ]
+
+    with open(output_folder_path / "students.csv", "w", newline="") as students_csv:
+        student_writer = csv.writer(students_csv)
+        student_writer.writerow(student_headers)
+        for student in student_roster:
+            poster_date, poster_time = "", ""
+            if student.is_poster:
+                poster_date, poster_time = index_to_datetime(student.presentation_time)
+            student_row = [
+                student.student_id,
+                "Yes" if student.is_paper else "No",
+                "Yes" if student.is_poster else "No",
+                CATEGORY_NUMBERS_TO_LABELS[student.category],
+                student.paper_judges[0] if student.is_paper else "",
+                student.paper_judges[1] if student.is_paper else "",
+                student.presentation_judges[0] if student.is_poster else "",
+                poster_date,
+                poster_time,
+            ]
+            student_writer.writerow(student_row)
+
+    with open(
+        output_folder_path / "paper_judges.csv", "w", newline=""
+    ) as paper_judges_csv:
+        paper_judges_writer = csv.writer(paper_judges_csv)
+        paper_judges_writer.writerow(paper_judges_headers)
+        for judge in judge_roster:
+            if not judge.is_paper_reviewer:
+                continue
+            for student in judge.assigned_papers:
+                paper_judge_row = [
+                    judge.first,
+                    judge.last,
+                    judge.email,
+                    judge.phone,
+                    student.student_id,
+                    student.full_paper_pdf,
+                ]
+                paper_judges_writer.writerow(paper_judge_row)
+
+    with open(
+        output_folder_path / "poster_judges.csv", "w", newline=""
+    ) as poster_judges_csv:
+        poster_judges_writer = csv.writer(poster_judges_csv)
+        poster_judges_writer.writerow(poster_judges_headers)
+        for judge in sorted(judge_roster, key=lambda judge: (judge.first, judge.last)):
+            if not judge.presentation_availability:
+                continue
+
+            for student in sorted(
+                judge.assigned_presentations,
+                key=lambda student: student.presentation_time,
+            ):
+                poster_date, poster_time = index_to_datetime(student.presentation_time)
+                poster_judge_row = [
+                    judge.first,
+                    judge.last,
+                    judge.email,
+                    judge.phone,
+                    student.student_id,
+                    poster_date,
+                    poster_time,
+                    student.poster_pdf,
+                ]
+                poster_judges_writer.writerow(poster_judge_row)
+
+    with open(output_folder_path / "judges.csv", "w", newline="") as judges_csv:
+        judges_writer = csv.writer(judges_csv)
+        judges_writer.writerow(judges_headers)
+        for judge in sorted(judge_roster, key=lambda judge: (judge.first, judge.last)):
+
+            poster_assignment = []
+            paper_assignment = []
+            for student in sorted(
+                judge.assigned_presentations,
+                key=lambda student: student.presentation_time,
+            ):
+                poster_date, poster_time = index_to_datetime(student.presentation_time)
+                poster_assignment.append(
+                    f"Student {student.student_id}: {poster_date} {poster_time}"
+                )
+
+            for student in sorted(
+                judge.assigned_papers, key=lambda student: student.student_id
+            ):
+                paper_assignment.append(f"Student {student.student_id}")
+
+            judge_row = [
+                judge.first,
+                judge.last,
+                judge.email,
+                judge.phone,
+                "\n".join(poster_assignment),
+                "\n".join(paper_assignment),
+            ]
+            judges_writer.writerow(judge_row)
+
+    with open(
+        output_folder_path / "presentation_schedule.csv", "w", newline=""
+    ) as presentation_schedule_csv:
+        presentation_schedule_writer = csv.writer(presentation_schedule_csv)
+        presentation_schedule_writer.writerow(presentation_schedule_headers)
+
+        presentations = []
+        for student in sorted(
+            student_roster,
+            key=lambda student: student.presentation_time
+            if student.presentation_time is not None
+            else 0,
+        ):
+            if not student.is_poster:
+                continue
+            presentations.append(
+                [
+                    *index_to_datetime(student.presentation_time),
+                    student.student_id,
+                    student.presentation_judges[0].first,
+                    student.presentation_judges[0].last,
+                    student.presentation_judges[0].email,
+                    student.presentation_judges[0].phone,
+                ]
             )
 
-    print("\n".join(out))
+        presentation_schedule_writer.writerows(presentations)
+
+    print(
+        f"Scheduling successfully completed!\nOutput data can be found in {str(output_folder_path.resolve())}."
+    )
 
 
 def main():
-    judge_data_path = "sample_judge_data.csv"
-    student_data_path = "sample_student_data.csv"
+    input_folder_path = Path(INPUT_FOLDER_PATH)
+    input_judge_data_path = input_folder_path / JUDGE_DATA
+    input_student_data_path = input_folder_path / STUDENT_DATA
+    if not (
+        input_folder_path.exists()
+        and input_student_data_path.exists()
+        and input_judge_data_path.exists()
+    ):
+        error_message = "The following files are missing."
+        if not input_folder_path.exists():
+            error_message += f'\n"{str(input_folder_path.resolve())}" (input folder)'
+        if not input_student_data_path.exists():
+            error_message += (
+                f'\n"{str(input_student_data_path.resolve())}" (input student data)'
+            )
+        if not input_judge_data_path.exists():
+            error_message += (
+                f'\n"{str(input_judge_data_path.resolve())}" (input judge data)'
+            )
+        error_message += "\n"
+        output(None, None, error=error_message)
+        return
 
-    judge_roster = create_judge_roster(judge_data_path)
-    student_roster = create_student_roster(student_data_path)
-    assign_presentations(judge_roster, student_roster)
+    judge_roster = create_judge_roster(input_judge_data_path)
+    student_roster = create_student_roster(input_student_data_path)
+    try:
+        assign_presentations(judge_roster, student_roster)
+    except PresentationAssignmentError as e:
+        output(None, None, error=e.message)
+        return
     assign_papers(judge_roster, student_roster)
     output(judge_roster, student_roster)
 

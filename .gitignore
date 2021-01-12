@@ -1,4 +1,8 @@
+# Compiled Python files
+*.py[cod]
+__pycache__/
+
+output/
+input/*
+!input/ignore.md
 *.csv
-venv/
-.vsls.json
-.vscode/
