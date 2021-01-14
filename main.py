@@ -7,10 +7,14 @@ from judge import Judge
 from student import Student
 from util import (
     PresentationAssignmentError,
+    OutputVerificationError,
     time_slot_to_time,
     column_name_to_date,
     date_and_time_to_index,
     index_to_datetime,
+    index_to_datetime_str,
+    get_column_name_from_datetime,
+    get_time_slot_availability_string_from_datetime,
     value_to_excel_csv_string,
 )
 from config import (
@@ -19,6 +23,7 @@ from config import (
     JUDGE_CATEGORIES,
     STUDENT_CATEGORIES,
     CATEGORY_NUMBERS_TO_LABELS,
+    CATEGORY_NUMBERS_TO_LABELS_JUDGES,
     INPUT_FOLDER_PATH,
     OUTPUT_FOLDER_PATH,
     STUDENT_DATA,
@@ -62,7 +67,7 @@ def create_judge_roster(csv_filename):
                 preferred_categories=[
                     JUDGE_CATEGORIES[category]
                     for category in JUDGE_CATEGORIES
-                    if row[JudgeColumnNames.PREFERRED_CATEGORIES].find(category) != -1
+                    if category in row[JudgeColumnNames.PREFERRED_CATEGORIES]
                 ],
                 is_paper_reviewer=row[JudgeColumnNames.IS_PAPER_REVIEWER] == "Yes",
                 presentation_availability=new_presentation_availability,
@@ -209,6 +214,218 @@ def assign_papers(judge_roster, student_roster):
                 judge.assign_paper(student)
 
 
+def verify_output(
+    judge_csv_filename, student_csv_filename, judge_roster, student_roster
+):
+    # Verify judges
+    with open(judge_csv_filename, encoding="utf-8") as judge_csv_file:
+        judge_csvreader = csv.DictReader(judge_csv_file)
+
+        for row in judge_csvreader:
+            if not any(row.values()):
+                continue
+            first = row[JudgeColumnNames.FIRST_NAME]
+            last = row[JudgeColumnNames.LAST_NAME]
+            email = row[JudgeColumnNames.EMAIL]
+            phone = row[JudgeColumnNames.PHONE]
+            preferred_categories = [
+                JUDGE_CATEGORIES[category]
+                for category in JUDGE_CATEGORIES
+                if row[JudgeColumnNames.PREFERRED_CATEGORIES].find(category) != -1
+            ]
+            is_paper_reviewer = row[JudgeColumnNames.IS_PAPER_REVIEWER] == "Yes"
+
+            # Find matching judges in output
+            matching_judges = [
+                judge
+                for judge in judge_roster
+                if (
+                    judge.first,
+                    judge.last,
+                    judge.email,
+                    judge.phone,
+                    judge.preferred_categories,
+                    judge.is_paper_reviewer,
+                )
+                == (first, last, email, phone, preferred_categories, is_paper_reviewer)
+            ]
+
+            # Throw if more more than one output judge matches the input CSV row
+            if len(matching_judges) != 1:
+                error_message = (
+                    "For a given input judge, there was more than one judge in the output with matching details.\n"
+                    "Input judge's name and contact details:\n"
+                    f"First name: {first}, last name: {last}, email: {email}, phone number: {phone}."
+                )
+                raise OutputVerificationError(error_message)
+
+            judge = matching_judges[0]
+
+            # Check that the judge's presentation availability matches the input CSV row
+            for index in judge.presentation_availability:
+                index_dt = index_to_datetime(index)
+                column_name = get_column_name_from_datetime(index_dt)
+                if (
+                    get_time_slot_availability_string_from_datetime(index_dt)
+                    not in row[column_name]
+                ):
+                    error_message = (
+                        "For a given input judge, their processed judge object was incorrectly set to be available for some amount of time slots during which they are not actually available.\n"
+                        "Input judge's name and contact details:\n"
+                        f"First name: {first}, last name: {last}, email: {email}, phone number: {phone}."
+                    )
+                    raise OutputVerificationError(error_message)
+
+            # Check that the judge's assigned presentations are in their presentation availability
+            for student in judge.assigned_presentations:
+                if student.presentation_time not in judge.presentation_availability:
+                    error_message = (
+                        "A given input judge was assigned a presentation for a time at which they are not available.\n"
+                        "Input judge's name and contact details:\n"
+                        f"First name: {first}, last name: {last}, email: {email}, phone number: {phone}."
+                        f"Presentation time that they were incorrectly assigned: {get_time_slot_availability_string_from_datetime(student.presentation_time)}."
+                    )
+                    raise OutputVerificationError(error_message)
+
+            # Check that the judge is a paper reviewer if they are assigned papers
+            if judge.assigned_papers and not is_paper_reviewer:
+                error_message = (
+                    "A given input judge who was not marked as a paper reviewer was assigned papers.\n"
+                    "Input judge's name and contact details:\n"
+                    f"First name: {first}, last name: {last}, email: {email}, phone number: {phone}."
+                )
+                raise OutputVerificationError(error_message)
+
+            # Check that the judge has selected the categories that they are judging
+            assigned_student_categories = [
+                student.category
+                for student in judge.assigned_papers + judge.assigned_papers
+            ]
+            for category in assigned_student_categories:
+                if (
+                    CATEGORY_NUMBERS_TO_LABELS_JUDGES[category]
+                    not in row[JudgeColumnNames.PREFERRED_CATEGORIES]
+                ):
+                    assigned_presentation_students = "\n".join(
+                        [
+                            f"Student ID: {student.student_id}"
+                            for student in judge.assigned_presentatons
+                        ]
+                    )
+                    assigned_paper_students = "\n".join(
+                        [
+                            f"Student ID: {student.student_id}"
+                            for student in judge.assigned_papers
+                        ]
+                    )
+                    error_message = (
+                        "A given input judge was assigned some amount of papers or presentations whose category the judge did not select.\n"
+                        "Input judge's name and contact details:\n"
+                        f"First name: {first}, last name: {last}, email: {email}, phone number: {phone}.\n"
+                        f"Input judge's assigned presentations:\n{assigned_presentation_students}.\n"
+                        if assigned_presentation_students
+                        else ""
+                        f"Input judge's assigned papers:\n{assigned_paper_students}.\n"
+                        if assigned_paper_students
+                        else ""
+                    )
+                    raise OutputVerificationError(error_message)
+
+            # Check that the judge's preferred categories match the input CSV row
+            for category in judge.preferred_categories:
+                if (
+                    CATEGORY_NUMBERS_TO_LABELS_JUDGES[category]
+                    not in row[JudgeColumnNames.PREFERRED_CATEGORIES]
+                ):
+                    error_message = (
+                        "For a given input judge, their processed judge object was incorrectly set to prefer some amount of categories which they do not actually prefer.\n"
+                        "Input judge's name and contact details:\n"
+                        f"First name: {first}, last name: {last}, email: {email}, phone number: {phone}.\n"
+                        f"Input judge's processed preferred categories:\n{', '.join([CATEGORY_NUMBERS_TO_LABELS_JUDGES[pref_cat] for pref_cat in judge.preferred_categories])}.\n"
+                    )
+                    raise OutputVerificationError(error_message)
+
+    # Verify students
+    with open(student_csv_filename, encoding="utf-8") as students_csv_file:
+        student_csvreader = csv.DictReader(students_csv_file)
+
+        for row in student_csvreader:
+            if not any(row.values()):
+                continue
+
+            student_id = int(row[StudentColumnNames.SUBMISSION_NUMBER])
+            matching_students = [
+                student
+                for student in student_roster
+                if student.student_id == student_id
+            ]
+
+            # Throw if more more than one output student matches the input CSV row
+            if len(matching_students) != 1:
+                error_message = (
+                    "For a given input student, there was more than one student in the output with matching details.\n"
+                    f"Input student's submission number: {student_id}\n"
+                )
+                raise OutputVerificationError(error_message)
+
+            student = matching_students[0]
+
+            # Check that a student has the correct category
+            if STUDENT_CATEGORIES[row[StudentColumnNames.CATEGORY]] != student.category:
+                error_message = (
+                    "For a given input student, the category does not match the output student's category.\n"
+                    f"Input student's submission number: {student_id}\n"
+                )
+                raise OutputVerificationError(error_message)
+
+            # Check that a student is paper if they have been assigned paper
+            if (
+                student.paper_judges
+                and "Oral" not in row[StudentColumnNames.PARTICIPATION_TYPE]
+            ):
+                error_message = (
+                    "A given input student was assigned paper judges when they are not an oral/paper presenter.\n"
+                    f"Input student's submission number: {student_id}\n"
+                )
+                raise OutputVerificationError(error_message)
+
+            # Check that a student is poster if they have been assigned posters
+            if (
+                student.presentation_judges
+                and "Poster" not in row[StudentColumnNames.PARTICIPATION_TYPE]
+            ):
+                error_message = (
+                    "A given input student was assigned presentation judges when they are not an poster presenter.\n"
+                    f"Input student's submission number: {student_id}\n"
+                )
+                raise OutputVerificationError(error_message)
+
+            # Check that the student has two paper judges (if needed)
+            if student.is_paper and len(student.paper_judges) != 2:
+                assigned_paper_judges = ", ".join(
+                    [f"{judge.first} {judge.last}" for judge in student.paper_judges]
+                )
+                error_message = (
+                    "A given input student was not assigned 2 paper judges, even though they are an oral/paper presenter.\n"
+                    f"Input student's submission number: {student_id}\n"
+                    f"Input student's assigned paper judges:\n{assigned_paper_judges if assigned_paper_judges else '[empty]'}\n"
+                )
+
+            # Check that the student has one poster judge (if needed)
+            if student.is_poster and len(student.presentation_judges) != 1:
+                assigned_poster_judges = ", ".join(
+                    [
+                        f"{judge.first} {judge.last}"
+                        for judge in student.presentation_judges
+                    ]
+                )
+                error_message = (
+                    "A given input student was not assigned 1 poster judge, even though they are a poster presenter.\n"
+                    f"Input student's submission number: {student_id}\n"
+                    f"Input student's assigned poster presentation judges:\n{assigned_poster_judges if assigned_poster_judges else '[empty]'}\n"
+                )
+
+
 def output(judge_roster, student_roster, error=None):
     output_folder_path = Path(OUTPUT_FOLDER_PATH)
     if output_folder_path.exists():
@@ -292,7 +509,9 @@ def output(judge_roster, student_roster, error=None):
         for student in student_roster:
             poster_date, poster_time = "", ""
             if student.is_poster:
-                poster_date, poster_time = index_to_datetime(student.presentation_time)
+                poster_date, poster_time = index_to_datetime_str(
+                    student.presentation_time
+                )
             student_row = [
                 student.student_id,
                 "Yes" if student.is_paper else "No",
@@ -338,7 +557,9 @@ def output(judge_roster, student_roster, error=None):
                 judge.assigned_presentations,
                 key=lambda student: student.presentation_time,
             ):
-                poster_date, poster_time = index_to_datetime(student.presentation_time)
+                poster_date, poster_time = index_to_datetime_str(
+                    student.presentation_time
+                )
                 poster_judge_row = [
                     judge.first,
                     judge.last,
@@ -362,7 +583,9 @@ def output(judge_roster, student_roster, error=None):
                 judge.assigned_presentations,
                 key=lambda student: student.presentation_time,
             ):
-                poster_date, poster_time = index_to_datetime(student.presentation_time)
+                poster_date, poster_time = index_to_datetime_str(
+                    student.presentation_time
+                )
                 poster_assignment.append(
                     f"Student {student.student_id}: {poster_date} {poster_time}"
                 )
@@ -399,7 +622,7 @@ def output(judge_roster, student_roster, error=None):
                 continue
             presentations.append(
                 [
-                    *index_to_datetime(student.presentation_time),
+                    *index_to_datetime_str(student.presentation_time),
                     student.student_id,
                     student.presentation_judges[0].first,
                     student.presentation_judges[0].last,
@@ -447,6 +670,13 @@ def main():
         output(None, None, error=e.message)
         return
     assign_papers(judge_roster, student_roster)
+    try:
+        verify_output(
+            input_judge_data_path, input_student_data_path, judge_roster, student_roster
+        )
+    except OutputVerificationError as e:
+        output(None, None, error=e.message)
+        return
     output(judge_roster, student_roster)
 
 

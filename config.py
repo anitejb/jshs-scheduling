@@ -4,8 +4,16 @@
 
 ################ Judges ################
 
+# Judge hourly availability question column name format, where "{date_name}"
+# will take on the date name values in JUDGE_AVAILABILITY_DATE_NAMES
+JUDGE_AVAILABILITY_QUESTION_FORMAT = "Availability for Poster and/or Oral Evaluation for Monday, January 18-Friday, January 22, 8:00am - 8:00pm. (Please select  a minimum of 2, but more is appriciated.) [{date_name}]"
+
+# Judge availability column date name format. For this setting, weekday names,
+# month names, and dates can be referred to as "{Weekday}", "{Month}", and "{Date}", respectively.
+JUDGE_AVAILABILITY_DATE_NAME_FORMAT = "{Weekday}, {Month} {Date}"
+
 # Days that judges can choose to judge, as written in the form availability questions
-_JUDGE_AVAILABILITY_DAYS = (
+_JUDGE_AVAILABILITY_DATE_NAMES = (
     "Monday, January 18",
     "Tuesday, January 19",
     "Wednesday, January 20",
@@ -13,9 +21,13 @@ _JUDGE_AVAILABILITY_DAYS = (
     "Friday, January 22",
 )
 
-# Judge hourly availability question column name format, where "{day}"
-# will take on the day values in _JUDGE_AVAILABILITY_DAYS
-_JUDGE_AVAILABILITY_QUESTION_FORMAT = "Availability for Poster and/or Oral Evaluation for Monday, January 18-Friday, January 22, 8:00am - 8:00pm. (Please select  a minimum of 2, but more is appriciated.) [{day}]"
+# Judge availability time slot format. For this setting, hour numbers and am/pm values for
+# the start and end times of a given time slot can be referred to as "{Hour}", "{AM_or_PM}",
+# "{am_or_pm}", "{Hour_Plus_1}", "{Plus_1_AM_or_PM}", and "{Plus_1_am_or_pm}" (different AM
+# and PM references are available for capitalization purposes).
+JUDGE_AVAILABILITY_TIME_SLOT_FORMAT = (
+    "{Hour}:00 {am_or_pm} - {Hour_Plus_1}:00 {Plus_1_am_or_pm}"
+)
 
 # This class holds all of the judge data column names that are used.
 class JudgeColumnNames:
@@ -28,8 +40,8 @@ class JudgeColumnNames:
 
     # Do not edit, this generates judge availability column names
     JUDGE_AVAILABILITY_COLUMN_NAMES = tuple(
-        _JUDGE_AVAILABILITY_QUESTION_FORMAT.format(day=day)
-        for day in _JUDGE_AVAILABILITY_DAYS
+        JUDGE_AVAILABILITY_QUESTION_FORMAT.format(date_name=date_name)
+        for date_name in _JUDGE_AVAILABILITY_DATE_NAMES
     )
 
 
@@ -83,6 +95,17 @@ CATEGORY_NUMBERS_TO_LABELS = {
     5: "Mathematics & Computer Science",
     6: "Physical Sciences",
     7: "Biomedical Sciences",
+}
+
+CATEGORY_NUMBERS_TO_LABELS_JUDGES = {
+    0: "Medicine and Health; Behavioral and Social Sciences",
+    1: "Life sciences (general biology—animal sciences, plant sci, ecology; cellular and molecular bio, genetics, immunology, bio)",
+    2: "Engineering; technology (including renewable energies, robotics)",
+    3: "Environmental science (pollution and impact upon ecosystems, environmental management, bioremediation, climatology, weather)",
+    4: "Chemistry (including chemistry-physical, organic, inorganic; earth science-geochemistry; materials science, alternative fuels)",
+    5: "Mathematics and Computer science/computer engineering; applied mathematics-theoretical computer science",
+    6: "Physical Sciences – physics; computational astronomy; theoretical mathematics",
+    7: "Biomedical Sciences, Molecular/Cellular",
 }
 
 ################ Event info ################
