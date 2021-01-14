@@ -34,7 +34,7 @@ Built with pure [Python](https://www.python.org) and <3.
 
 ### Running the Scheduler
 * On Windows only: Execute `run.bat` in the folder containing the program (from Windows File Explorer, you can do this by opening the file from the folder directly).
-* On Windows or Mac/Linux: open a terminal in the folder containing the program and run the program with the command `py main.py` or `python main.py`.
+* On Windows or Mac/Linux: open a terminal in the folder containing the program and run the program with the command `py main.py` or `python main.py`, respectively.
 
 
 ### Working with the Output
@@ -70,3 +70,7 @@ If for some reason the program runs into an error, a text file with the error me
 ## Authors
 
 This project was developed in equal part by Anitej Biradar ([@anitejb](https://github.com/anitejb)) and [@mmatlin](https://github.com/mmatlin).
+
+## License
+
+Copyright (c) 2021 Anitej Biradar ([@anitejb](https://github.com/anitejb)) and [@mmatlin](https://github.com/mmatlin). Released under the MIT License. See [LICENSE](LICENSE) for details.
